@@ -1,45 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import models
 
-class SimpleCNN(nn.Module):
-    """A simple Convolutional Neural Network for image classification."""
-    
-    def __init__(self, num_classes=2):
-        super(SimpleCNN, self).__init__()
-        # First convolutional layer: sees 1-channel (grayscale) 256x256 images
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, stride=1, padding=1)
-        # Second convolutional layer
-        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1)
-        # Max pooling layer
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        # Calculate the size of the flattened features
-        # Input 256 -> Pool -> 128 -> Pool -> 64. So, 32 channels * 64 * 64
-        self.fc1_input_dim = 32 * 64 * 64
-        
-        # Fully connected layers
-        self.fc1 = nn.Linear(self.fc1_input_dim, 512)
-        self.fc2 = nn.Linear(512, num_classes) # The final classification layer
-        self.dropout = nn.Dropout(0.5)
-
-    def forward_features(self, x):
-        """Passes input through the convolutional 'feature extraction' layers."""
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        # Flatten the image tensor for the fully connected layers
-        x = x.view(-1, self.fc1_input_dim)
-        return x
-
-    def forward(self, x):
-        """The full forward pass for the classifier."""
-        x = self.forward_features(x)
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x) # The final prediction
-        return x
-
-# --- NEW CLASS FOR THE SIAMESE NETWORK ---
+# --- This is our original, simple Encoder ---
+# We can leave this here for reference, it's not hurting anything.
 class Encoder(nn.Module):
     """
     This is the "Encoder" network. It's the same as SimpleCNN,
@@ -49,7 +14,6 @@ class Encoder(nn.Module):
     
     def __init__(self):
         super(Encoder, self).__init__()
-        # We build the encoder using the parts from our proven SimpleCNN
         self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
@@ -57,17 +21,55 @@ class Encoder(nn.Module):
         self.fc1 = nn.Linear(self.fc1_input_dim, 512)
         
     def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.view(-1, self.fc1_input_dim)
+        x = F.relu(self.fc1(x)) 
+        return x
+
+# --- THIS IS THE NEW, CORRECTED ResNetEncoder ---
+class ResNetEncoder(nn.Module):
+    """
+    A powerful Encoder based on a pre-trained ResNet18 model.
+    """
+    
+    def __init__(self, embedding_dim=512):
+        super(ResNetEncoder, self).__init__()
+        
+        # 1. Load a pre-trained ResNet18 model
+        resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        
+        # --- NO INPUT SURGERY ---
+        # We are *not* changing resnet.conv1.
+        # It correctly expects a 3-channel image, and our dataset
+        # (in src/dataset.py) correctly provides one.
+        
+        # 2. Perform "Output Surgery"
+        # Get the number of input features for the final layer
+        num_ftrs = resnet.fc.in_features
+        
+        # We still replace the final classification layer with our "fingerprint" layer
+        # We use nn.Identity() as a placeholder to effectively remove the final layer.
+        resnet.fc = nn.Identity()
+        
+        # Now, self.encoder is the full ResNet *except* its final layer.
+        self.encoder = resnet
+        
+        # 3. Add our own new "fingerprint" layer
+        # This will take the output from the ResNet (num_ftrs)
+        # and turn it into our 512-dimension embedding.
+        self.embedding_layer = nn.Linear(num_ftrs, embedding_dim)
+
+    def forward(self, x):
         """
         The forward pass for the encoder.
         It returns the 512-dimension "fingerprint" vector.
         """
-        # Pass input through the feature extractor
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, self.fc1_input_dim)
-        
-        # Pass through the first fully connected layer
-        # This 512-dimension vector is our "fingerprint"
-        x = F.relu(self.fc1(x)) 
+        # 1. Pass the 3-channel image through the ResNet body
+        x = self.encoder(x)
+        # 2. Pass the ResNet output through our new fingerprint layer
+        x = self.embedding_layer(x)
         return x
+
+
 
